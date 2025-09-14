@@ -218,9 +218,9 @@ int ksu_handle_rename(struct dentry *old_dentry, struct dentry *new_dentry)
 	return 0;
 }
 
-static void nuke_ext4_sysfs() {
+static void nuke_ext4_sysfs(const char *custompath) {
 	struct path path;
-	int err = kern_path("/data/adb/modules", 0, &path);
+	int err = kern_path(custompath, 0, &path);
 	if (err) {
 		pr_err("nuke path err: %d\n", err);
 		return;
@@ -229,11 +229,13 @@ static void nuke_ext4_sysfs() {
 	struct super_block* sb = path.dentry->d_inode->i_sb;
 	const char* name = sb->s_type->name;
 	if (strcmp(name, "ext4") != 0) {
-		pr_info("nuke but module aren't mounted\n");
+		pr_info("%s: nuke but nothing mounted\n", __func__);
 		path_put(&path);
 		return;
 	}
-
+	
+	// char	s_id[32]; /* Informational name */
+	pr_info("%s: node: %s - path %s\n", __func__, sb->s_id, custompath);
 	ext4_unregister_sysfs(sb);
 	path_put(&path);
 }
@@ -317,6 +319,23 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
 		return 0;
 	}
 
+	if (arg2 == CMD_NUKE_EXT4_SYSFS) {
+		char buf[384];
+
+		if (copy_from_user(buf, (const char __user *)arg3, sizeof(buf) - 1)) {
+			pr_err("cmd_nuke_ext4_sysfs: failed to copy user string\n");
+			return 0;
+		}
+		buf[384 - 1] = '\0';
+
+		nuke_ext4_sysfs(buf);
+
+		if (copy_to_user(result, &reply_ok, sizeof(reply_ok))) {
+			pr_err("prctl reply error, cmd: %lu\n", arg2);
+		}
+		return 0;
+	}
+
 	if (arg2 == CMD_BECOME_MANAGER) {
 		if (from_manager) {
 			if (copy_to_user(result, &reply_ok, sizeof(reply_ok))) {
@@ -377,7 +396,7 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
 		case EVENT_MODULE_MOUNTED: {
 			ksu_module_mounted = true;
 			pr_info("module mounted!\n");
-			nuke_ext4_sysfs();
+			nuke_ext4_sysfs("/data/adb/modules");
 			break;
 		}
 		default:
