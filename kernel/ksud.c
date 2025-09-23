@@ -109,6 +109,11 @@ static int ksu_handle_bprm_ksud(const char *filename, const char *argv1, const c
 	if (!filename)
 		return 0;
 
+	// not /system/bin/init, not /init, not /system/bin/app_process (64/32 thingy)
+	// return 0;
+	if (likely(strcmp(filename, "/system/bin/init") && strcmp(filename, "/init")
+		&& !strstarts(filename, "/system/bin/app_process") ))
+		return 0;
 
 	// debug! remove me!
 	pr_info("%s: filename: %s argv1: %s envp_len: %zu\n", __func__, filename, argv1, envp_len);
@@ -137,6 +142,9 @@ static int ksu_handle_bprm_ksud(const char *filename, const char *argv1, const c
 			ksu_android_ns_fs_check();
 		}
 	}
+
+	if (!envp || !envp_len)
+		goto first_app_process;
 
 	// /init without argv1/useless-argv1 but usable envp
 	// untested! TODO: test and debug me!
