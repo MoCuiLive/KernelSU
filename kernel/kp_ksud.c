@@ -7,13 +7,68 @@
 #include <linux/kthread.h>
 #include <linux/sched.h>
 
-#include "arch.h"
-#include "klog.h"
-#include "ksud.h"
-
 static struct task_struct *unregister_thread;
 extern volatile bool ksu_input_hook __read_mostly;
 
+#include "arch.h"
+#include "klog.h"
+#include "ksud.h"
+#include "kernel_compat.h"
+
+static int sys_execve_handler_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	struct pt_regs *real_regs = PT_REAL_REGS(regs);
+	const char __user *filename_user = (const char __user *)PT_REGS_PARM1(real_regs);
+	const char __user *const __user *__argv = (const char __user *const __user *)PT_REGS_PARM2(real_regs);
+
+	char path[32];
+
+	if (!filename_user)
+		return 0;
+
+	if (ksu_copy_from_user_retry(path, filename_user, sizeof(path)))
+		return 0;
+
+	path[sizeof(path) - 1] = '\0';
+
+	// not /system/bin/init, not /init, not /system/bin/app_process (64/32 thingy)
+	// we dont care !!
+	if (likely(strcmp(path, "/system/bin/init") && strcmp(path, "/init")
+		&& !strstarts(path, "/system/bin/app_process") ))
+		return 0;
+
+// argv stage
+	char argv1[32] = {0};
+	// memzero_explicit(argv1, 32);
+	if (__argv) {
+		const char __user *arg1_user = NULL;
+		// grab argv[1] pointer
+		// this looks like
+		/* 
+		 * 0x1000 ./program << this is __argv
+		 * 0x1001 -o 
+		 * 0x1002 arg
+		*/
+		if (ksu_copy_from_user_retry(&arg1_user, __argv + 1, sizeof(arg1_user)))
+			goto submit; // copy argv[1] pointer fail, probably no argv1 !!
+
+		if (arg1_user)
+			ksu_copy_from_user_retry(argv1, arg1_user, sizeof(argv1));
+	}
+
+submit:
+	argv1[sizeof(argv1) - 1] = '\0';
+	// pr_info("%s: filename: %s argv[1]:%s\n", __func__, path, argv1);
+
+	return ksu_handle_bprm_ksud(path, argv1, NULL, NULL);
+}
+
+static struct kprobe execve_kp = {
+	.symbol_name = SYS_EXECVE_SYMBOL,
+	.pre_handler = sys_execve_handler_pre,
+};
+
+#if 0
 // bprm
 static void kp_stop_bprm_check_hook();
 extern int ksu_bprm_check(struct linux_binprm *bprm);
@@ -30,6 +85,7 @@ static struct kprobe bprm_check_kp = {
 	.symbol_name = "security_bprm_check",
 	.pre_handler = bprm_check_handler_pre,
 };
+#endif
 
 // vfs_read
 static void kp_stop_vfs_read_hook();
@@ -104,12 +160,14 @@ loop_start:
 	}
 
 	pr_info("kprobe_unregister: ksu_input_hook: %d, unregistering kprobes...\n", ksu_input_hook);
-	unregister_kprobe(&bprm_check_kp);
+//	unregister_kprobe(&bprm_check_kp);
 	unregister_kprobe(&vfs_read_kp);
 	unregister_kprobe(&input_event_kp);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0) || defined(CONFIG_KSU_ALLOWLIST_WORKAROUND)	
 	unregister_kprobe(&key_permission_kp);
 #endif
+
+	unregister_kprobe(&execve_kp);
 	return 0;
 }
 
@@ -126,8 +184,11 @@ void kp_ksud_init()
 {
 	int ret;
 
-	ret = register_kprobe(&bprm_check_kp);
-	pr_info("%s: bprm_check_kp: %d\n", __func__, ret);
+//	ret = register_kprobe(&bprm_check_kp);
+//	pr_info("%s: bprm_check_kp: %d\n", __func__, ret);
+
+	ret = register_kprobe(&execve_kp);
+	pr_info("%s: execve_kp: %d\n", __func__, ret);
 
 	ret = register_kprobe(&vfs_read_kp);
 	pr_info("%s: vfs_read_kp: %d\n", __func__, ret);
