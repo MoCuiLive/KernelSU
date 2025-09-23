@@ -61,7 +61,6 @@ static int input_handle_event_handler_pre(struct kprobe *p, struct pt_regs *regs
 	int *value = (int *)&PT_REGS_CCALL_PARM4(regs);
 
 	return ksu_handle_input_handle_event(type, code, value);
-
 };
 
 static struct kprobe input_event_kp = {
@@ -91,6 +90,53 @@ static struct kprobe key_permission_kp = {
 };
 #endif // key_permission
 
+// security_bounded_transition - https://github.com/tiann/KernelSU/pull/1704
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
+#include "avc_ss.h"
+#include "selinux/selinux.h"
+static int bounded_transition_handler_pre(struct kprobe *p, struct pt_regs *regs) {
+	u32 *old_sid = (u32 *)&PT_REGS_PARM1(regs);
+	u32 *new_sid = (u32 *)&PT_REGS_PARM2(regs);
+
+	u32 init_sid, su_sid;
+	int error;
+
+	if (!ss_initialized)
+		return 0;
+
+	/* domain unchanged */
+	if (*old_sid == *new_sid)
+		return 0;
+
+	const char *init_domain = "u:r:init:s0";
+	const char *su_domain = "u:r:su:s0";
+
+	error = security_secctx_to_secid(init_domain, strlen(init_domain), &init_sid);
+	if (error) {
+		pr_info("%s: cannot get sid of init context, err %d\n", __func__, error);
+		return 0;
+	}
+
+	error = security_secctx_to_secid(su_domain, strlen(su_domain), &su_sid);
+	if (error) {
+		pr_info("%s: cannot get sid of su context, err %d\n", __func__, error);
+		return 0;
+	}
+
+	if (*old_sid == init_sid && *new_sid == su_sid) {
+		pr_info("%s: init to su transition found\n", __func__);
+		*old_sid = *new_sid;  // make the original func return 0
+	}
+
+	return 0;
+}
+
+static struct kprobe bounded_transition_kp = {
+	.symbol_name = "security_bounded_transition",
+	.pre_handler = bounded_transition_handler_pre,
+};
+#endif // security_bounded_transition
+
 static int unregister_kprobe_function(void *data)
 {
 	pr_info("kprobe_unregister: thread started, ksu_input_hook: %d\n", ksu_input_hook);
@@ -103,11 +149,15 @@ loop_start:
 	}
 
 	pr_info("kprobe_unregister: ksu_input_hook: %d, unregistering kprobes...\n", ksu_input_hook);
-	unregister_kprobe(&bprm_check_kp);
-	unregister_kprobe(&vfs_read_kp);
-	unregister_kprobe(&input_event_kp);
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0) || defined(CONFIG_KSU_ALLOWLIST_WORKAROUND)	
 	unregister_kprobe(&key_permission_kp);
+#endif
+	unregister_kprobe(&input_event_kp);
+	unregister_kprobe(&vfs_read_kp);
+	unregister_kprobe(&bprm_check_kp);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0) 
+	unregister_kprobe(&bounded_transition_kp);
 #endif
 	return 0;
 }
@@ -124,6 +174,11 @@ static void unregister_kprobe_thread()
 void kp_ksud_init()
 {
 	int ret;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0) 
+	ret = register_kprobe(&bounded_transition_kp);
+	pr_info("%s: bounded_transition_kp: %d\n", __func__, ret);
+#endif
 
 	ret = register_kprobe(&bprm_check_kp);
 	pr_info("%s: bprm_check_kp: %d\n", __func__, ret);
