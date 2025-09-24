@@ -221,6 +221,8 @@ static int unregister_kprobe_function(void *data)
 	unregister_kprobe_logged(&input_event_kp, "input_event_kp");
 	unregister_kprobe_logged(&bprm_check_kp, "bprm_check_kp");
 	unregister_kprobe_logged(&vfs_read_kp, "vfs_read_kp");
+	
+	return 0;
 }
 
 void unregister_kprobe_thread()
