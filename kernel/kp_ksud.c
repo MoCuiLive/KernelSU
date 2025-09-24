@@ -148,53 +148,6 @@ static struct kprobe key_permission_kp = {
 };
 #endif // key_permission
 
-// security_bounded_transition - https://github.com/tiann/KernelSU/pull/1704
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-#include "avc_ss.h"
-#include "selinux/selinux.h"
-static int bounded_transition_handler_pre(struct kprobe *p, struct pt_regs *regs) {
-	u32 *old_sid = (u32 *)&PT_REGS_PARM1(regs);
-	u32 *new_sid = (u32 *)&PT_REGS_PARM2(regs);
-
-	u32 init_sid, su_sid;
-	int error;
-
-	if (!ss_initialized)
-		return 0;
-
-	/* domain unchanged */
-	if (*old_sid == *new_sid)
-		return 0;
-
-	const char *init_domain = "u:r:init:s0";
-	const char *su_domain = "u:r:su:s0";
-
-	error = security_secctx_to_secid(init_domain, strlen(init_domain), &init_sid);
-	if (error) {
-		pr_info("%s: cannot get sid of init context, err %d\n", __func__, error);
-		return 0;
-	}
-
-	error = security_secctx_to_secid(su_domain, strlen(su_domain), &su_sid);
-	if (error) {
-		pr_info("%s: cannot get sid of su context, err %d\n", __func__, error);
-		return 0;
-	}
-
-	if (*old_sid == init_sid && *new_sid == su_sid) {
-		pr_info("%s: init to su transition found\n", __func__);
-		*old_sid = *new_sid;  // make the original func return 0
-	}
-
-	return 0;
-}
-
-static struct kprobe bounded_transition_kp = {
-	.symbol_name = "security_bounded_transition",
-	.pre_handler = bounded_transition_handler_pre,
-};
-#endif // security_bounded_transition
-
 static void unregister_kprobe_logged(struct kprobe *kp, const char *name)
 {
 	if (!kp->addr) {
@@ -215,9 +168,6 @@ static int unregister_kprobe_function(void *data)
 	unregister_kprobe_logged(&key_permission_kp, "key_permission_kp");
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0) 
-	unregister_kprobe_logged(&bounded_transition_kp, "bounded_transition_kp");
-#endif
 	unregister_kprobe_logged(&input_event_kp, "input_event_kp");
 	unregister_kprobe_logged(&bprm_check_kp, "bprm_check_kp");
 	unregister_kprobe_logged(&vfs_read_kp, "vfs_read_kp");
@@ -251,10 +201,6 @@ void kp_ksud_init()
 	register_kprobe_safer(&vfs_read_kp, "vfs_read_kp");
 	register_kprobe_safer(&input_event_kp, "input_event_kp");
 	register_kprobe_safer(&bprm_check_kp, "bprm_check_kp");
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0) 
-	register_kprobe_safer(&bounded_transition_kp, "bounded_transition_kp");
-#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0) || defined(CONFIG_KSU_ALLOWLIST_WORKAROUND)
 	register_kprobe_safer(&key_permission_kp, "key_permission_kp");
